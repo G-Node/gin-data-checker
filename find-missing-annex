@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Search all repositories under given path for annexed files with missing data
+
+usage() {
+    echo "USAGE"
+    echo "  $0 <directory>"
+    echo ""
+    echo "Scan a path recursively for annexed files with missing data"
+    echo
+    echo "  <directory>    path to scan (recursively)"
+    echo ""
+    echo "  -h, --help      display this help and exit"
+    exit 1
+}
+
+if (( $# != 1 )); then
+    usage
+fi
+
+case $1 in
+    "-h" | "--help")
+        usage
+        ;;
+    *)
+        repostore=$1
+        ;;
+esac
+
+echo "Scanning ${repostore}"
+repositories=$(find ${repostore} -type d -iname "*.git")
+
+# filter out repos that have no annex
+annexrepos=()
+count=0
+for repo in ${repositories}; do
+    (( count++ ))
+    echo -n "Checking for annex branch in ${repo}:  "
+    if git -C ${repo} show-ref --verify --quiet refs/heads/git-annex 2> /dev/null; then
+        annexrepos+=("${repo}")
+        echo "yes"
+    else
+        echo "no"
+    fi
+done
+
+echo "Found ${#annexrepos[@]} annex repositories (of ${count} total)"
+echo "Checking files..."
+
+isannex() {
+    repo="$1"
+    fname="$2"
+    size=$(git -C ${repo} cat-file -s HEAD:"${fname}")
+    # echo ${fname} ${size}
+    if (( ${size} < 1024 )) && $( git -C ${repo} show HEAD:"${fname}" | grep -I -q -F "annex/objects" ); then
+         true
+     else
+         false
+    fi
+}
+
+finddata() {
+    fname="$2"
+    annexid=$(git -C "${repo}" show HEAD:"${fname}")
+    filehash=$(basename "${annexid}")
+    # echo -n "Searching for ${filehash}: "
+    if ! find ${repo} -name ${filehash} | grep -q .; then
+        echo "${repo}/${fname} is MISSING (${filehash})"
+    fi
+}
+
+checkfiles() {
+    repo="$*"
+    # echo "::: ${repo} :::"
+    while IFS= read -r -d '' fname ; do
+        if isannex ${repo} "${fname}"; then
+            finddata ${repo} "${fname}"
+        fi
+    done < <(git -C ${repo} ls-tree -z --name-only -r --full-tree HEAD)
+}
+
+# Check each repository for annexed files
+for repo in ${annexrepos[@]}; do
+    checkfiles ${repo}
+done
