@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -22,8 +23,7 @@ Scan a path recursively for annexed files with missing data
 
 func checkerr(err error) {
 	if err != nil {
-		fmt.Printf("[E] %v", err.Error())
-		os.Exit(-1)
+		log.Fatalf("[E] %v", err.Error())
 	}
 }
 
