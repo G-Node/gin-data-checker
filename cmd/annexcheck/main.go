@@ -98,5 +98,14 @@ func main() {
 	fmt.Printf("Scanning %s\n", c.Repostore)
 	repos := scan(c.Repostore)
 
-	fmt.Printf("Found %d repositories\n", len(repos))
+	var annexcount uint64
+	for _, r := range repos {
+		if r.Annex {
+			annexcount++
+			fmt.Printf("%d: %s\n", annexcount, r.Path)
+		}
+	}
+
+	fmt.Printf("Total repositories scanned:         %5d\n", len(repos))
+	fmt.Printf("Repositories with git-annex branch: %5d\n", annexcount)
 }
