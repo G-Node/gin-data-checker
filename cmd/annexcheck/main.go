@@ -286,7 +286,7 @@ type workerqueue struct {
 
 func newworkerqueue(nworkers uint8, njobs uint64) *workerqueue {
 	wq := workerqueue{}
-	wq.queue = make(chan *repository, nworkers)
+	wq.queue = make(chan *repository, njobs)
 	wq.nworkers = nworkers
 	wq.njobs = njobs
 
@@ -302,7 +302,7 @@ func (wq *workerqueue) start() {
 
 func (wq *workerqueue) wait() {
 	for wq.ncomplete < wq.njobs {
-		fmt.Printf("%d/%d\r", wq.ncomplete, wq.njobs)
+		fmt.Printf(" : %d/%d\r", wq.ncomplete, wq.njobs)
 	}
 	close(wq.queue)
 	fmt.Printf("\n%d jobs complete. Stopping workers.\n", wq.ncomplete)
@@ -339,9 +339,9 @@ func main() {
 	fmt.Printf("Total repositories scanned:         %5d\n", len(repos))
 	fmt.Printf("Repositories with git-annex branch: %5d\n", annexcount)
 
-	wq := newworkerqueue(4, annexcount)
+	wq := newworkerqueue(8, annexcount)
 	wq.start()
-	fmt.Print("Scanning annexed repositories for missing content...\n")
+	fmt.Printf("Submitting %d jobs...", annexcount)
 	for _, r := range repos {
 		if r.Annex {
 			// TODO: Run async
@@ -349,6 +349,7 @@ func main() {
 			wq.submitjob(r)
 		}
 	}
+	fmt.Println("Done")
 
 	wq.wait()
 
