@@ -5,9 +5,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
+	"gopkg.in/src-d/go-git.v4/plumbing/object"
 	"gopkg.in/src-d/go-git.v4/plumbing/storer"
 )
 
@@ -33,14 +35,10 @@ type repository struct {
 	Path string
 	// True if it contains annex branches
 	Annex bool
-	// Array of annexed files with missing contents
-	MissingContent []annexedfile
-}
-
-// represents an annexed file as a repository-root-relative path and its key
-type annexedfile struct {
-	Path string
-	Key  string
+	// Array of annexed keys with missing contents
+	MissingKeys []string
+	// Embed git.Repository struct
+	*git.Repository
 }
 
 func checkerr(err error) {
@@ -92,11 +90,11 @@ func openrepo(path string) *repository {
 		return nil
 	}
 
-	return &repository{Path: path, Annex: hasannexbranch(repo)}
+	return &repository{Path: path, Annex: hasannexbranch(repo), Repository: repo}
 }
 
-func scan(repostore string) []repository {
-	repos := make([]repository, 0, 100)
+func scan(repostore string) []*repository {
+	repos := make([]*repository, 0, 100)
 
 	walker := func(path string, info os.FileInfo, err error) error {
 		if filepath.Base(path) == git.GitDirName {
@@ -111,7 +109,7 @@ func scan(repostore string) []repository {
 
 		repo := openrepo(path)
 		if repo != nil {
-			repos = append(repos, *repo)
+			repos = append(repos, repo)
 		}
 		return nil
 	}
@@ -120,6 +118,48 @@ func scan(repostore string) []repository {
 	checkerr(err)
 
 	return repos
+}
+
+func findMissingAnnex(repo *repository) {
+	// blobs instead of the filesystem structure
+	// this scanner needs to work with bare repositories, so we iterate the git
+	blobs, err := repo.BlobObjects()
+	if err != nil {
+		log.Printf("[E] failed to get blobs for repository at %q: %s", repo.Path, err)
+		return
+	}
+
+	checkblob := func(blob *object.Blob) error {
+		if blob.Size > 1024 {
+			// Annex pointer blobs are small
+			// Skip blobs larger than 1k
+			return nil
+		}
+
+		reader, err := blob.Reader()
+		if err != nil {
+			log.Printf("[E] failed to open blob %q for reading: %s", blob.Hash.String(), err)
+			return nil
+		}
+
+		data := make([]byte, 1024)
+		n, err := reader.Read(data)
+		if err != nil {
+			log.Printf("[E] failed to read contents of blob %q: %s", blob.Hash.String(), err)
+			return nil
+		}
+
+		contents := string(data[:n])
+		if strings.Contains(contents, "annex/objects") {
+			repo.MissingKeys = append(repo.MissingKeys, strings.TrimSpace(contents))
+		}
+		return nil
+	}
+
+	err = blobs.ForEach(checkblob)
+	if err != nil {
+		log.Printf("[E] failed to check all blobs for repository %q: %s", repo.Path, err)
+	}
 }
 
 func main() {
@@ -141,4 +181,23 @@ func main() {
 
 	fmt.Printf("Total repositories scanned:         %5d\n", len(repos))
 	fmt.Printf("Repositories with git-annex branch: %5d\n", annexcount)
+
+	fmt.Print("Scanning annexed repositories for missing content... ")
+	for _, r := range repos {
+		if r.Annex {
+			// TODO: Run async
+			findMissingAnnex(r)
+		}
+	}
+	fmt.Println("Done")
+
+	for _, r := range repos {
+		if len(r.MissingKeys) > 0 {
+			fmt.Printf("Repository %q is missing content for the following files:\n", r.Path)
+			for idx, annexkey := range r.MissingKeys {
+				fmt.Printf("  %d: %s\n", idx, annexkey)
+			}
+			fmt.Println()
+		}
+	}
 }
