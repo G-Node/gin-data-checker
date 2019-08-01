@@ -22,12 +22,6 @@ Scan a path recursively for annexed files with missing data
   -h, --help      display this help and exit
 `
 
-func checkerr(err error) {
-	if err != nil {
-		log.Fatalf("[E] %v", err.Error())
-	}
-}
-
 type config struct {
 	// Repostore to scan (recursively)
 	Repostore string
@@ -39,6 +33,20 @@ type repository struct {
 	Path string
 	// True if it contains annex branches
 	Annex bool
+	// Array of annexed files with missing contents
+	MissingContent []annexedfile
+}
+
+// represents an annexed file as a repository-root-relative path and its key
+type annexedfile struct {
+	Path string
+	Key  string
+}
+
+func checkerr(err error) {
+	if err != nil {
+		log.Fatalf("[E] %s", err)
+	}
 }
 
 func printusage() {
