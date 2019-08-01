@@ -56,10 +56,7 @@ func getargs() config {
 	return config{Repostore: args[1]}
 }
 
-func hasannexbranch(path string) bool {
-	repo, err := git.PlainOpen(path)
-	checkerr(err)
-
+func hasannexbranch(repo *git.Repository) bool {
 	refs, err := repo.Branches()
 	checkerr(err)
 
@@ -75,14 +72,31 @@ func hasannexbranch(path string) bool {
 	return found
 }
 
+// openrepo attempts to open a repository at the given path and if successful,
+// checks for the existence of an annex branch and returns a populated
+// repository with the Annex flag set.  If the path is not a repository, it
+// returns nil.
+func openrepo(path string) *repository {
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		return nil
+	}
+
+	return &repository{Path: path, Annex: hasannexbranch(repo)}
+}
+
 func scan(repostore string) []repository {
 	repos := make([]repository, 0, 100)
 
 	walker := func(path string, info os.FileInfo, err error) error {
-		// stupid git detection: If path is a directory called .git, the parent is a repository
-		if filepath.Base(path) == git.GitDirName && info.IsDir() {
-			gitroot := filepath.Dir(path)
-			repos = append(repos, repository{Path: gitroot, Annex: hasannexbranch(gitroot)})
+		if filepath.Base(path) == git.GitDirName {
+			// don't descend into .git directories
+			return filepath.SkipDir
+		}
+
+		repo := openrepo(path)
+		if repo != nil {
+			repos = append(repos, *repo)
 		}
 		return nil
 	}
@@ -96,6 +110,10 @@ func scan(repostore string) []repository {
 func main() {
 	c := getargs()
 	fmt.Printf("Scanning %s\n", c.Repostore)
+	// We could check repositories as we find them, but the initial scan is
+	// fast enough that we can do it separately and it gives us a total count
+	// so we can have some idea of the progress later when we're checking
+	// files.
 	repos := scan(c.Repostore)
 
 	var annexcount uint64
