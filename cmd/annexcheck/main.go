@@ -215,6 +215,11 @@ func findMissingAnnex(repo *repository) {
 			return
 		}
 
+		if blob.Size == 0 {
+			// skip empty files too
+			return
+		}
+
 		reader, err := blob.Reader()
 		if err != nil {
 			log.Printf("[E] failed to open blob %q for reading: %s", blob.Hash.String(), err)
