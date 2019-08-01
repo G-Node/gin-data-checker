@@ -1,14 +1,18 @@
 package main
 
 import (
+	"crypto/md5"
 	"fmt"
+	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
+	"gopkg.in/src-d/go-git.v4/plumbing/filemode"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
 	"gopkg.in/src-d/go-git.v4/plumbing/storer"
 )
@@ -24,6 +28,8 @@ Scan a path recursively for annexed files with missing data
   -h, --help      display this help and exit
 `
 
+const annexDirLetters = "0123456789zqjxkmvwgpfZQJXKMVWGPF"
+
 type config struct {
 	// Repostore to scan (recursively)
 	Repostore string
@@ -36,9 +42,17 @@ type repository struct {
 	// True if it contains annex branches
 	Annex bool
 	// Array of annexed keys with missing contents
-	MissingKeys []string
+	MissingContent []annexedfile
 	// Embed git.Repository struct
 	*git.Repository
+}
+
+type annexedfile struct {
+	// The path to the annexed file contents, rooted at the .git/ directory
+	// (starts with /annex/objects)
+	ObjectPath string
+	// The path in the repository tree, rooted at the repository root
+	TreePath string
 }
 
 func checkerr(err error) {
@@ -137,49 +151,127 @@ func normaliseAnnexKey(key string) string {
 	return key[idx:]
 }
 
+// hashdirlower is the new method for calculating the location of an annexed
+// file's contents based on its key
+// See https://git-annex.branchable.com/internals/hashing/ for description
+func hashdirlower(key string) string {
+	hash := md5.Sum([]byte(key))
+	hashstr := fmt.Sprintf("%x", hash)
+	return filepath.Join(hashstr[:3], hashstr[3:6], key)
+}
+
+// hashdirmixed is the old method for calculating the location of an annexed
+// file's contents based on its key
+// See https://git-annex.branchable.com/internals/hashing/ for description
+func hashdirmixed(key string) string {
+	hash := md5.Sum([]byte(key))
+	var sum uint64
+
+	sum = 0
+	// reverse the first 32bit word of the hash
+	firstWord := make([]byte, 4)
+	for idx, b := range hash[:4] {
+		firstWord[3-idx] = b
+	}
+	for _, b := range firstWord {
+		sum <<= 8
+		sum += uint64(b)
+	}
+
+	rem := sum
+	letters := make([]byte, 4)
+	idx := 0
+	for rem > 0 && idx < 4 {
+		// pull out five bits
+		chr := rem & 31
+		// save it
+		letters[idx] = annexDirLetters[chr]
+		// shift the remaining
+		rem >>= 6
+		idx++
+	}
+
+	path := filepath.Join(fmt.Sprintf("%s%s", string(letters[1]), string(letters[0])), fmt.Sprintf("%s%s", string(letters[3]), string(letters[2])), key)
+	return path
+}
+
+func pow(x, y int) int {
+	return int(math.Pow(float64(x), float64(y)))
+}
+
+func myencoding(b []byte) {
+	x := uint16(b[1]) + uint16(b[0])<<8
+	fmt.Println(x)
+}
+
 func findMissingAnnex(repo *repository) {
 	// blobs instead of the filesystem structure
 	// this scanner needs to work with bare repositories, so we iterate the git
-	blobs, err := repo.BlobObjects()
+	head, err := repo.Head()
 	if err != nil {
-		log.Printf("[E] failed to get blobs for repository at %q: %s", repo.Path, err)
+		log.Printf("[E] failed to get head for repository at %q: %s", repo.Path, err)
 		return
 	}
 
-	checkblob := func(blob *object.Blob) error {
+	headcommit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		log.Printf("[E] failed to get HEAD commit for repository at %q: %s", repo.Path, err)
+		return
+	}
+
+	tree, err := headcommit.Tree()
+	if err != nil {
+		log.Printf("[E] failed to get root HEAD tree for repository at %q: %s", repo.Path, err)
+		return
+	}
+
+	checkblob := func(blob *object.Blob, fileloc string) {
 		if blob.Size > 1024 {
 			// Annex pointer blobs are small
 			// Skip blobs larger than 1k
-			return nil
+			return
 		}
 
 		reader, err := blob.Reader()
 		if err != nil {
 			log.Printf("[E] failed to open blob %q for reading: %s", blob.Hash.String(), err)
-			return nil
+			return
 		}
 
 		data := make([]byte, 1024)
 		n, err := reader.Read(data)
 		if err != nil {
 			log.Printf("[E] failed to read contents of blob %q: %s", blob.Hash.String(), err)
-			return nil
+			return
 		}
 
 		contents := string(data[:n])
 		if strings.Contains(contents, "annex/objects") {
-			// check if the file exists
+			// calculate the content location and check if it exists
 			objectpath := filepath.Join(repo.Path, git.GitDirName, normaliseAnnexKey(contents))
+			objectpath = strings.TrimSpace(objectpath)
 			if _, err := os.Stat(objectpath); os.IsNotExist(err) {
-				repo.MissingKeys = append(repo.MissingKeys, strings.TrimSpace(objectpath))
+				repo.MissingContent = append(repo.MissingContent, annexedfile{ObjectPath: objectpath, TreePath: fileloc})
 			}
 		}
-		return nil
+		return
 	}
 
-	err = blobs.ForEach(checkblob)
-	if err != nil {
-		log.Printf("[E] failed to check all blobs for repository %q: %s", repo.Path, err)
+	walker := object.NewTreeWalker(tree, true, nil)
+	for name, entry, err := walker.Next(); err != io.EOF; name, entry, err = walker.Next() {
+		switch entry.Mode {
+		case filemode.Regular:
+			fallthrough
+		case filemode.Symlink:
+			fallthrough
+		case filemode.Executable:
+			blob, err := repo.BlobObject(entry.Hash)
+			if err != nil {
+				log.Printf("[E] failed to get blob for %q (%s) in %q: %s", entry.Hash, name, repo.Path, err)
+				continue
+			}
+			checkblob(blob, name)
+		}
 	}
 }
 
@@ -213,10 +305,10 @@ func main() {
 	fmt.Println("Done")
 
 	for _, r := range repos {
-		if len(r.MissingKeys) > 0 {
+		if len(r.MissingContent) > 0 {
 			fmt.Printf("Repository %q is missing content for the following files:\n", r.Path)
-			for idx, annexkey := range r.MissingKeys {
-				fmt.Printf("  %d: %s\n", idx, annexkey)
+			for idx, af := range r.MissingContent {
+				fmt.Printf("  %d: %s [%s]\n", idx, af.TreePath, af.ObjectPath)
 			}
 			fmt.Println()
 		}
