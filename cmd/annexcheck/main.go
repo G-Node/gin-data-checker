@@ -104,6 +104,11 @@ func scan(repostore string) []repository {
 			return filepath.SkipDir
 		}
 
+		if !info.IsDir() {
+			// Only check directories
+			return nil
+		}
+
 		repo := openrepo(path)
 		if repo != nil {
 			repos = append(repos, *repo)
