@@ -120,6 +120,23 @@ func scan(repostore string) []*repository {
 	return repos
 }
 
+// normamiseAnnexkey converts an annex key path to make it relative to the .git
+// directory root.  Depending on the annex version of the repository, the
+// contents of annex pointer files (blobs) can be relative to the .git
+// directory (i.e., they begin with "/annex/objects") or relative to the
+// location of the file in the tree (e.g., they begin with
+// "../.git/annex/objects").  This function normalises a given key path so that
+// it's in the first form (begins with "/annex/objects").
+func normaliseAnnexKey(key string) string {
+	if strings.HasPrefix(key, "/annex/objects") {
+		// already good, return as is
+		return key
+	}
+
+	idx := strings.Index(key, "/annex/objects")
+	return key[idx:]
+}
+
 func findMissingAnnex(repo *repository) {
 	// blobs instead of the filesystem structure
 	// this scanner needs to work with bare repositories, so we iterate the git
@@ -151,7 +168,11 @@ func findMissingAnnex(repo *repository) {
 
 		contents := string(data[:n])
 		if strings.Contains(contents, "annex/objects") {
-			repo.MissingKeys = append(repo.MissingKeys, strings.TrimSpace(contents))
+			// check if the file exists
+			objectpath := filepath.Join(repo.Path, git.GitDirName, normaliseAnnexKey(contents))
+			if _, err := os.Stat(objectpath); os.IsNotExist(err) {
+				repo.MissingKeys = append(repo.MissingKeys, strings.TrimSpace(objectpath))
+			}
 		}
 		return nil
 	}
