@@ -277,6 +277,48 @@ func findMissingAnnex(repo *repository) {
 	}
 }
 
+type workerqueue struct {
+	queue     chan *repository
+	nworkers  uint8
+	njobs     uint64
+	ncomplete uint64
+}
+
+func newworkerqueue(nworkers uint8, njobs uint64) *workerqueue {
+	wq := workerqueue{}
+	wq.queue = make(chan *repository, nworkers)
+	wq.nworkers = nworkers
+	wq.njobs = njobs
+
+	return &wq
+}
+
+func (wq *workerqueue) start() {
+	for idx := uint8(0); idx < wq.nworkers; idx++ {
+		go wq.startworker()
+		fmt.Printf("Worker %d started\n", idx)
+	}
+}
+
+func (wq *workerqueue) wait() {
+	for wq.ncomplete < wq.njobs {
+		fmt.Printf("%d/%d\r", wq.ncomplete, wq.njobs)
+	}
+	close(wq.queue)
+	fmt.Printf("\n%d jobs complete. Stopping workers.\n", wq.ncomplete)
+}
+
+func (wq *workerqueue) startworker() {
+	for repo := range wq.queue {
+		findMissingAnnex(repo)
+		wq.ncomplete++
+	}
+}
+
+func (wq *workerqueue) submitjob(r *repository) {
+	wq.queue <- r
+}
+
 func main() {
 	c := getargs()
 	fmt.Printf("Scanning %s\n", c.Repostore)
@@ -297,14 +339,18 @@ func main() {
 	fmt.Printf("Total repositories scanned:         %5d\n", len(repos))
 	fmt.Printf("Repositories with git-annex branch: %5d\n", annexcount)
 
-	fmt.Print("Scanning annexed repositories for missing content... ")
+	wq := newworkerqueue(4, annexcount)
+	wq.start()
+	fmt.Print("Scanning annexed repositories for missing content...\n")
 	for _, r := range repos {
 		if r.Annex {
 			// TODO: Run async
-			findMissingAnnex(r)
+			// findMissingAnnex(r)
+			wq.submitjob(r)
 		}
 	}
-	fmt.Println("Done")
+
+	wq.wait()
 
 	for _, r := range repos {
 		if len(r.MissingContent) > 0 {
