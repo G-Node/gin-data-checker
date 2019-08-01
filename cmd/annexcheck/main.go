@@ -208,6 +208,13 @@ func findMissingAnnex(repo *repository) {
 		return
 	}
 
+	gitdir := git.GitDirName
+	_, err = repo.Worktree()
+	if err == git.ErrIsBareRepository {
+		gitdir = ""
+	}
+	objectstore := filepath.Join(repo.Path, gitdir, "annex", "objects")
+
 	checkblob := func(blob *object.Blob, fileloc string) {
 		if blob.Size > 1024 {
 			// Annex pointer blobs are small
@@ -240,10 +247,10 @@ func findMissingAnnex(repo *repository) {
 
 			// there are two possible object paths depending on annex version
 			// the most common one is the newest, but we should try both anyway
-			objectpath := filepath.Join(repo.Path, git.GitDirName, "annex", "objects", hashdirmixed(key))
+			objectpath := filepath.Join(objectstore, hashdirmixed(key))
 			if _, err := os.Stat(objectpath); os.IsNotExist(err) {
 				// try the other one
-				objectpath = filepath.Join(repo.Path, git.GitDirName, "annex", "objects", hashdirlower(key))
+				objectpath = filepath.Join(objectstore, hashdirlower(key))
 				if _, err = os.Stat(objectpath); os.IsNotExist(err) {
 					repo.MissingContent = append(repo.MissingContent, annexedfile{ObjectPath: objectpath, TreePath: fileloc})
 				}
