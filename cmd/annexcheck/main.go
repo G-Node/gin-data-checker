@@ -134,23 +134,6 @@ func scan(repostore string) []*repository {
 	return repos
 }
 
-// normamiseAnnexkey converts an annex key path to make it relative to the .git
-// directory root.  Depending on the annex version of the repository, the
-// contents of annex pointer files (blobs) can be relative to the .git
-// directory (i.e., they begin with "/annex/objects") or relative to the
-// location of the file in the tree (e.g., they begin with
-// "../.git/annex/objects").  This function normalises a given key path so that
-// it's in the first form (begins with "/annex/objects").
-func normaliseAnnexKey(key string) string {
-	if strings.HasPrefix(key, "/annex/objects") {
-		// already good, return as is
-		return key
-	}
-
-	idx := strings.Index(key, "/annex/objects")
-	return key[idx:]
-}
-
 // hashdirlower is the new method for calculating the location of an annexed
 // file's contents based on its key
 // See https://git-annex.branchable.com/internals/hashing/ for description
@@ -248,10 +231,17 @@ func findMissingAnnex(repo *repository) {
 		contents := string(data[:n])
 		if strings.Contains(contents, "annex/objects") {
 			// calculate the content location and check if it exists
-			objectpath := filepath.Join(repo.Path, git.GitDirName, normaliseAnnexKey(contents))
-			objectpath = strings.TrimSpace(objectpath)
+			key := filepath.Base(strings.TrimSpace(contents))
+
+			// there are two possible object paths depending on annex version
+			// the most common one is the newest, but we should try both anyway
+			objectpath := filepath.Join(repo.Path, git.GitDirName, "annex", "objects", hashdirmixed(key))
 			if _, err := os.Stat(objectpath); os.IsNotExist(err) {
-				repo.MissingContent = append(repo.MissingContent, annexedfile{ObjectPath: objectpath, TreePath: fileloc})
+				// try the other one
+				objectpath = filepath.Join(repo.Path, git.GitDirName, "annex", "objects", hashdirlower(key))
+				if _, err = os.Stat(objectpath); os.IsNotExist(err) {
+					repo.MissingContent = append(repo.MissingContent, annexedfile{ObjectPath: objectpath, TreePath: fileloc})
+				}
 			}
 		}
 		return
@@ -308,7 +298,7 @@ func main() {
 		if len(r.MissingContent) > 0 {
 			fmt.Printf("Repository %q is missing content for the following files:\n", r.Path)
 			for idx, af := range r.MissingContent {
-				fmt.Printf("  %d: %s [%s]\n", idx, af.TreePath, af.ObjectPath)
+				fmt.Printf("  %d: %s [%s]\n", idx+1, af.TreePath, af.ObjectPath)
 			}
 			fmt.Println()
 		}
