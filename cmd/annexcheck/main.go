@@ -8,6 +8,7 @@ import (
 
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
+	"gopkg.in/src-d/go-git.v4/plumbing/storer"
 )
 
 const usage = `
@@ -64,6 +65,7 @@ func hasannexbranch(repo *git.Repository) bool {
 	isannexref := func(c *plumbing.Reference) error {
 		if string(c.Name()) == "refs/heads/git-annex" {
 			found = true
+			return storer.ErrStop
 		}
 		return nil
 	}
