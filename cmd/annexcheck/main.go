@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/md5"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -25,11 +26,14 @@ var (
 
 const usage = `
 USAGE
-  annexcheck <directory>
+  annexcheck [options] <directory>
 
 Scan a path recursively for annexed files with missing data
 
   <directory>    path to scan (recursively)
+
+  --database     database to use for determining forks; if unspecified, no fork detection is performed
+  --nworkers     number of concurrent workers (file scanners)
 
   -h, --help     display this help and exit
   --version      show version information
@@ -40,6 +44,10 @@ const annexDirLetters = "0123456789zqjxkmvwgpfZQJXKMVWGPF"
 type config struct {
 	// Repostore to scan (recursively)
 	Repostore string
+	// Database to use for checking forks
+	Database string
+	// Number of concurrent workers
+	NWorkers uint
 }
 
 // represents a single repository
@@ -84,17 +92,27 @@ func printversion() {
 	os.Exit(0)
 }
 
-func getargs() config {
-	args := os.Args
-	if len(args) != 2 {
-		printusage()
-	} else if args[1] == "-h" || args[1] == "--help" {
-		printusage()
-	} else if args[1] == "--version" {
+func readargs() config {
+	var db string
+	var verarg bool
+	var nw uint
+	flag.StringVar(&db, "database", "", "database to use for determining forks; if unspecified, no fork detection is performed")
+	flag.UintVar(&nw, "nworkers", 4, "number of concurrent workers")
+	flag.BoolVar(&verarg, "version", false, "show version information")
+	flag.Usage = printusage
+
+	flag.Parse()
+
+	if verarg {
 		printversion()
 	}
 
-	return config{Repostore: args[1]}
+	if flag.NArg() > 1 {
+		flag.Usage()
+	}
+
+	repostore := flag.Arg(0)
+	return config{Repostore: repostore, Database: db, NWorkers: uint(nw)}
 }
 
 func hasannexbranch(repo *git.Repository) bool {
@@ -299,12 +317,12 @@ func findMissingAnnex(repo *repository) {
 
 type workerqueue struct {
 	queue     chan *repository
-	nworkers  uint8
+	nworkers  uint
 	njobs     uint64
 	ncomplete uint64
 }
 
-func newworkerqueue(nworkers uint8, njobs uint64) *workerqueue {
+func newworkerqueue(nworkers uint, njobs uint64) *workerqueue {
 	wq := workerqueue{}
 	wq.queue = make(chan *repository, njobs)
 	wq.nworkers = nworkers
@@ -314,7 +332,7 @@ func newworkerqueue(nworkers uint8, njobs uint64) *workerqueue {
 }
 
 func (wq *workerqueue) start() {
-	for idx := uint8(0); idx < wq.nworkers; idx++ {
+	for idx := uint(0); idx < wq.nworkers; idx++ {
 		go wq.startworker()
 		fmt.Printf("Worker %d started\n", idx)
 	}
@@ -340,7 +358,10 @@ func (wq *workerqueue) submitjob(r *repository) {
 }
 
 func main() {
-	c := getargs()
+	c := readargs()
+	if c.Database != "" {
+		fmt.Printf("Using %s database to detect forks\n", c.Database)
+	}
 	fmt.Printf("Scanning %s\n", c.Repostore)
 	// We could check repositories as we find them, but the initial scan is
 	// fast enough that we can do it separately and it gives us a total count
@@ -359,7 +380,7 @@ func main() {
 	fmt.Printf("Total repositories scanned:         %5d\n", len(repos))
 	fmt.Printf("Repositories with git-annex branch: %5d\n", annexcount)
 
-	wq := newworkerqueue(8, annexcount)
+	wq := newworkerqueue(c.NWorkers, annexcount)
 	wq.start()
 	fmt.Printf("Submitting %d jobs...", annexcount)
 	for _, r := range repos {
