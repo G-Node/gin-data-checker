@@ -17,6 +17,12 @@ import (
 	"gopkg.in/src-d/go-git.v4/plumbing/storer"
 )
 
+var (
+	appversion string
+	build      string
+	commit     string
+)
+
 const usage = `
 USAGE
   annexcheck <directory>
@@ -25,7 +31,8 @@ Scan a path recursively for annexed files with missing data
 
   <directory>    path to scan (recursively)
 
-  -h, --help      display this help and exit
+  -h, --help     display this help and exit
+  --version      show version information
 `
 
 const annexDirLetters = "0123456789zqjxkmvwgpfZQJXKMVWGPF"
@@ -66,12 +73,25 @@ func printusage() {
 	os.Exit(0)
 }
 
+func printversion() {
+	if appversion == "" {
+		appversion = "[dev build]"
+		build = "[dev]"
+		commit = "???"
+	}
+
+	fmt.Printf("GIN data checker %s Build %s (%s)\n", appversion, build, commit)
+	os.Exit(0)
+}
+
 func getargs() config {
 	args := os.Args
 	if len(args) != 2 {
 		printusage()
 	} else if args[1] == "-h" || args[1] == "--help" {
 		printusage()
+	} else if args[1] == "--version" {
+		printversion()
 	}
 
 	return config{Repostore: args[1]}
