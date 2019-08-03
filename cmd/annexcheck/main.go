@@ -2,11 +2,9 @@ package main
 
 import (
 	"crypto/md5"
-	"flag"
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,15 +38,6 @@ Scan a path recursively for annexed files with missing data
 `
 
 const annexDirLetters = "0123456789zqjxkmvwgpfZQJXKMVWGPF"
-
-type config struct {
-	// Repostore to scan (recursively)
-	Repostore string
-	// Database to use for checking forks
-	Database string
-	// Number of concurrent workers
-	NWorkers uint
-}
 
 // represents a single repository
 type repository struct {
@@ -90,29 +79,6 @@ func printversion() {
 
 	fmt.Printf("GIN data checker %s Build %s (%s)\n", appversion, build, commit)
 	os.Exit(0)
-}
-
-func readargs() config {
-	var db string
-	var verarg bool
-	var nw uint
-	flag.StringVar(&db, "database", "", "database to use for determining forks; if unspecified, no fork detection is performed")
-	flag.UintVar(&nw, "nworkers", 4, "number of concurrent workers")
-	flag.BoolVar(&verarg, "version", false, "show version information")
-	flag.Usage = printusage
-
-	flag.Parse()
-
-	if verarg {
-		printversion()
-	}
-
-	if flag.NArg() > 1 {
-		flag.Usage()
-	}
-
-	repostore := flag.Arg(0)
-	return config{Repostore: repostore, Database: db, NWorkers: uint(nw)}
 }
 
 func hasannexbranch(repo *git.Repository) bool {
@@ -216,15 +182,6 @@ func hashdirmixed(key string) string {
 	return path
 }
 
-func pow(x, y int) int {
-	return int(math.Pow(float64(x), float64(y)))
-}
-
-func myencoding(b []byte) {
-	x := uint16(b[1]) + uint16(b[0])<<8
-	fmt.Println(x)
-}
-
 func findMissingAnnex(repo *repository) {
 	// blobs instead of the filesystem structure
 	// this scanner needs to work with bare repositories, so we iterate the git
@@ -315,48 +272,6 @@ func findMissingAnnex(repo *repository) {
 	}
 }
 
-type workerqueue struct {
-	queue     chan *repository
-	nworkers  uint
-	njobs     uint64
-	ncomplete uint64
-}
-
-func newworkerqueue(nworkers uint, njobs uint64) *workerqueue {
-	wq := workerqueue{}
-	wq.queue = make(chan *repository, njobs)
-	wq.nworkers = nworkers
-	wq.njobs = njobs
-
-	return &wq
-}
-
-func (wq *workerqueue) start() {
-	for idx := uint(0); idx < wq.nworkers; idx++ {
-		go wq.startworker()
-		fmt.Printf("Worker %d started\n", idx)
-	}
-}
-
-func (wq *workerqueue) wait() {
-	for wq.ncomplete < wq.njobs {
-		fmt.Printf(" : %d/%d\r", wq.ncomplete, wq.njobs)
-	}
-	close(wq.queue)
-	fmt.Printf("\n%d jobs complete. Stopping workers.\n", wq.ncomplete)
-}
-
-func (wq *workerqueue) startworker() {
-	for repo := range wq.queue {
-		findMissingAnnex(repo)
-		wq.ncomplete++
-	}
-}
-
-func (wq *workerqueue) submitjob(r *repository) {
-	wq.queue <- r
-}
-
 func main() {
 	c := readargs()
 	if c.Database != "" {
@@ -385,8 +300,6 @@ func main() {
 	fmt.Printf("Submitting %d jobs...", annexcount)
 	for _, r := range repos {
 		if r.Annex {
-			// TODO: Run async
-			// findMissingAnnex(r)
 			wq.submitjob(r)
 		}
 	}
