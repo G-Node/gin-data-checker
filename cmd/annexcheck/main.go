@@ -45,6 +45,8 @@ type repository struct {
 	Path string
 	// True if it contains annex branches
 	Annex bool
+	// True if the repository is a fork (always false if no database is used)
+	Fork bool
 	// Array of annexed keys with missing contents
 	MissingContent []annexedfile
 	// Embed git.Repository struct
@@ -81,6 +83,17 @@ func printversion() {
 	os.Exit(0)
 }
 
+// openrepo attempts to open a repository at the given path and if successful,
+// returns a repository with a reference to the open git.Repository.
+func openrepo(path string) *repository {
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		return nil
+	}
+
+	return &repository{Path: path, Repository: repo}
+}
+
 func hasannexbranch(repo *git.Repository) bool {
 	refs, err := repo.Branches()
 	checkerr(err)
@@ -98,21 +111,32 @@ func hasannexbranch(repo *git.Repository) bool {
 	return found
 }
 
-// openrepo attempts to open a repository at the given path and if successful,
-// checks for the existence of an annex branch and returns a populated
-// repository with the Annex flag set.  If the path is not a repository, it
-// returns nil.
-func openrepo(path string) *repository {
-	repo, err := git.PlainOpen(path)
-	if err != nil {
-		return nil
+func isfork(path string, database *gindb) bool {
+	// infer unique repo name from path
+	path = strings.TrimSuffix(path, ".git")
+	pathparts := strings.Split(path, string(filepath.Separator))
+	nparts := len(pathparts)
+	if nparts < 2 {
+		log.Printf("Couldn't infer unique repo name from parts: %+v\n", pathparts)
+		// can't figure out unique repo name; just give up
+		return false
 	}
-
-	return &repository{Path: path, Annex: hasannexbranch(repo), Repository: repo}
+	repopath := strings.ToLower(filepath.Join(pathparts[nparts-2:]...)) // last two path components
+	repo, ok := database.Repositories[repopath]
+	if !ok {
+		log.Printf("Couldn't find repository %q in database", repopath)
+		return false
+	}
+	return repo.IsFork
 }
 
-func scan(repostore string) []*repository {
+func scan(cfg config) []*repository {
 	repos := make([]*repository, 0, 100)
+
+	var database *gindb
+	if cfg.Database != "" {
+		database = loaddb(cfg.Database)
+	}
 
 	walker := func(path string, info os.FileInfo, err error) error {
 		if filepath.Base(path) == git.GitDirName {
@@ -126,13 +150,19 @@ func scan(repostore string) []*repository {
 		}
 
 		repo := openrepo(path)
-		if repo != nil {
-			repos = append(repos, repo)
+		if repo == nil {
+			return nil
 		}
+
+		repo.Annex = hasannexbranch(repo.Repository)
+		if database != nil {
+			repo.Fork = isfork(path, database)
+		}
+		repos = append(repos, repo)
 		return nil
 	}
 
-	err := filepath.Walk(repostore, walker)
+	err := filepath.Walk(cfg.Repostore, walker)
 	checkerr(err)
 
 	return repos
@@ -282,28 +312,34 @@ func main() {
 	// fast enough that we can do it separately and it gives us a total count
 	// so we can have some idea of the progress later when we're checking
 	// files.
-	repos := scan(c.Repostore)
+	repos := scan(c)
 
-	var annexcount uint64
+	var jobcount uint64
 	for _, r := range repos {
 		if r.Annex {
-			annexcount++
-			fmt.Printf("%d: %s\n", annexcount, r.Path)
+			fmt.Printf("%d: %s", jobcount, r.Path)
+			if r.Fork {
+				fmt.Print(" is a fork (skipping)")
+			} else {
+				jobcount++
+				fmt.Print(" will be scanned")
+			}
+			fmt.Println()
 		}
 	}
 
-	fmt.Printf("Total repositories scanned:         %5d\n", len(repos))
-	fmt.Printf("Repositories with git-annex branch: %5d\n", annexcount)
+	fmt.Printf("Total repositories found:         %5d\n", len(repos))
+	fmt.Printf("Repositories to scan (annexed, not forks): %5d\n", jobcount)
 
-	wq := newworkerqueue(c.NWorkers, annexcount)
+	wq := newworkerqueue(c.NWorkers, jobcount)
 	wq.start()
-	fmt.Printf("Submitting %d jobs...", annexcount)
+	fmt.Printf("Submitting %d jobs... ", jobcount)
 	for _, r := range repos {
-		if r.Annex {
+		if r.Annex && !r.Fork {
 			wq.submitjob(r)
 		}
 	}
-	fmt.Println("Done")
+	fmt.Println("OK")
 
 	wq.wait()
 
