@@ -272,10 +272,10 @@ func findMissingAnnex(repo *repository) {
 
 			// there are two possible object paths depending on annex version
 			// the most common one is the newest, but we should try both anyway
-			objectpath := filepath.Join(objectstore, hashdirmixed(key))
+			objectpath := filepath.Join(objectstore, hashdirmixed(key), key)
 			if _, err := os.Stat(objectpath); os.IsNotExist(err) {
 				// try the other one
-				objectpath = filepath.Join(objectstore, hashdirlower(key))
+				objectpath = filepath.Join(objectstore, hashdirlower(key), key)
 				if _, err = os.Stat(objectpath); os.IsNotExist(err) {
 					repo.MissingContent = append(repo.MissingContent, annexedfile{ObjectPath: objectpath, TreePath: fileloc})
 				}
