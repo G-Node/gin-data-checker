@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 type workerqueue struct {
 	queue     chan *repository
@@ -27,7 +30,8 @@ func (wq *workerqueue) start() {
 
 func (wq *workerqueue) wait() {
 	for wq.ncomplete < wq.njobs {
-		fmt.Printf(" : %d/%d\r", wq.ncomplete, wq.njobs)
+		fmt.Printf(" Progress: %d/%d\r", wq.ncomplete, wq.njobs)
+		time.Sleep(500 * time.Millisecond)
 	}
 	close(wq.queue)
 	fmt.Printf("\n%d jobs complete. Stopping workers.\n", wq.ncomplete)
