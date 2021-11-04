@@ -285,7 +285,6 @@ func findMissingAnnex(repo *repository) {
 				}
 			}
 		}
-		return
 	}
 
 	walker := object.NewTreeWalker(tree, true, nil)
