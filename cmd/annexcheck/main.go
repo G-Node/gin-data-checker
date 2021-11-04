@@ -230,15 +230,13 @@ func checkblob(objectstore string, blob *object.Blob, fileloc string) (annexedfi
 
 	reader, err := blob.Reader()
 	if err != nil {
-		log.Printf("[E] failed to open blob %q for reading: %s", blob.Hash.String(), err)
-		return annexedfile{}, fmt.Errorf("skip")
+		return annexedfile{}, fmt.Errorf("[E] failed to open blob %q for reading: %s", blob.Hash.String(), err)
 	}
 
 	data := make([]byte, 1024)
 	n, err := reader.Read(data)
 	if err != nil {
-		log.Printf("[E] failed to read contents of blob %q: %s", blob.Hash.String(), err)
-		return annexedfile{}, fmt.Errorf("skip")
+		return annexedfile{}, fmt.Errorf("[E] failed to read contents of blob %q: %s", blob.Hash.String(), err)
 	}
 
 	contents := string(data[:n])
@@ -303,6 +301,8 @@ func findMissingAnnex(repo *repository) {
 			latest, err := checkblob(objectstore, blob, name)
 			if err == nil {
 				repo.MissingContent = append(repo.MissingContent, latest)
+			} else if err.Error() != "skip" {
+				log.Print(err.Error())
 			}
 		}
 	}
