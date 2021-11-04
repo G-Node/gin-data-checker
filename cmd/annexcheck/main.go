@@ -144,6 +144,10 @@ func scan(cfg config) []*repository {
 			return filepath.SkipDir
 		}
 
+		if info == nil {
+			return fmt.Errorf("could not access directory '%s'", path)
+		}
+
 		if !info.IsDir() {
 			// Only check directories
 			return nil
