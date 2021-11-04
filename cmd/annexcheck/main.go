@@ -216,6 +216,50 @@ func hashdirmixed(key string) string {
 	return path
 }
 
+func checkblob(objectstore string, blob *object.Blob, fileloc string) (annexedfile, error) {
+	if blob.Size > 1024 {
+		// Annex pointer blobs are small
+		// Skip blobs larger than 1k
+		return annexedfile{}, fmt.Errorf("skip")
+	}
+
+	if blob.Size == 0 {
+		// skip empty files too
+		return annexedfile{}, fmt.Errorf("skip")
+	}
+
+	reader, err := blob.Reader()
+	if err != nil {
+		log.Printf("[E] failed to open blob %q for reading: %s", blob.Hash.String(), err)
+		return annexedfile{}, fmt.Errorf("skip")
+	}
+
+	data := make([]byte, 1024)
+	n, err := reader.Read(data)
+	if err != nil {
+		log.Printf("[E] failed to read contents of blob %q: %s", blob.Hash.String(), err)
+		return annexedfile{}, fmt.Errorf("skip")
+	}
+
+	contents := string(data[:n])
+	if strings.Contains(contents, "annex/objects") {
+		// calculate the content location and check if it exists
+		key := filepath.Base(strings.TrimSpace(contents))
+
+		// there are two possible object paths depending on annex version
+		// the most common one is the newest, but we should try both anyway
+		objectpath := filepath.Join(objectstore, hashdirmixed(key), key)
+		if _, err := os.Stat(objectpath); os.IsNotExist(err) {
+			// try the other one
+			objectpath = filepath.Join(objectstore, hashdirlower(key), key)
+			if _, err = os.Stat(objectpath); os.IsNotExist(err) {
+				return annexedfile{ObjectPath: objectpath, TreePath: fileloc}, nil
+			}
+		}
+	}
+	return annexedfile{}, fmt.Errorf("skip")
+}
+
 func findMissingAnnex(repo *repository) {
 	// blobs instead of the filesystem structure
 	// this scanner needs to work with bare repositories, so we iterate the git
@@ -237,56 +281,6 @@ func findMissingAnnex(repo *repository) {
 		return
 	}
 
-	gitdir := git.GitDirName
-	_, err = repo.Worktree()
-	if err == git.ErrIsBareRepository {
-		gitdir = ""
-	}
-	objectstore := filepath.Join(repo.Path, gitdir, "annex", "objects")
-
-	checkblob := func(blob *object.Blob, fileloc string) {
-		if blob.Size > 1024 {
-			// Annex pointer blobs are small
-			// Skip blobs larger than 1k
-			return
-		}
-
-		if blob.Size == 0 {
-			// skip empty files too
-			return
-		}
-
-		reader, err := blob.Reader()
-		if err != nil {
-			log.Printf("[E] failed to open blob %q for reading: %s", blob.Hash.String(), err)
-			return
-		}
-
-		data := make([]byte, 1024)
-		n, err := reader.Read(data)
-		if err != nil {
-			log.Printf("[E] failed to read contents of blob %q: %s", blob.Hash.String(), err)
-			return
-		}
-
-		contents := string(data[:n])
-		if strings.Contains(contents, "annex/objects") {
-			// calculate the content location and check if it exists
-			key := filepath.Base(strings.TrimSpace(contents))
-
-			// there are two possible object paths depending on annex version
-			// the most common one is the newest, but we should try both anyway
-			objectpath := filepath.Join(objectstore, hashdirmixed(key), key)
-			if _, err := os.Stat(objectpath); os.IsNotExist(err) {
-				// try the other one
-				objectpath = filepath.Join(objectstore, hashdirlower(key), key)
-				if _, err = os.Stat(objectpath); os.IsNotExist(err) {
-					repo.MissingContent = append(repo.MissingContent, annexedfile{ObjectPath: objectpath, TreePath: fileloc})
-				}
-			}
-		}
-	}
-
 	walker := object.NewTreeWalker(tree, true, nil)
 	for name, entry, err := walker.Next(); err != io.EOF; name, entry, err = walker.Next() {
 		switch entry.Mode {
@@ -300,7 +294,16 @@ func findMissingAnnex(repo *repository) {
 				log.Printf("[E] failed to get blob for %q (%s) in %q: %s", entry.Hash, name, repo.Path, err)
 				continue
 			}
-			checkblob(blob, name)
+			gitdir := git.GitDirName
+			_, err = repo.Worktree()
+			if err == git.ErrIsBareRepository {
+				gitdir = ""
+			}
+			objectstore := filepath.Join(repo.Path, gitdir, "annex", "objects")
+			latest, err := checkblob(objectstore, blob, name)
+			if err == nil {
+				repo.MissingContent = append(repo.MissingContent, latest)
+			}
 		}
 	}
 }
@@ -348,6 +351,12 @@ func main() {
 
 	for _, r := range repos {
 		if len(r.MissingContent) > 0 {
+			repoconf, err := r.Config()
+			if err != nil {
+				fmt.Printf("could not parse remotes: %s", err.Error())
+			} else {
+				fmt.Printf("\nRemotes %v\n", repoconf.Remotes["origin"].URLs)
+			}
 			fmt.Printf("Repository %q is missing content for the following files:\n", r.Path)
 			for idx, af := range r.MissingContent {
 				fmt.Printf("  %d: %s [%s]\n", idx+1, af.TreePath, af.ObjectPath)
